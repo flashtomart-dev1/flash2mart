@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "447122321425",
+    "project_id": "flash-2-mart",
+    "storage_bucket": "flash-2-mart.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:447122321425:android:b071e62fbb985f8eea81b0",
+        "android_client_info": {
+          "package_name": "com.example.flash2mart"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyBiJvMKd-N-DBbGIGQxyyy7gzBoroWuKAI"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
