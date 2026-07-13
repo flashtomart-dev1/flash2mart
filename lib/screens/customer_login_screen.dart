@@ -103,7 +103,7 @@ class _CustomerLoginScreenState extends State<CustomerLoginScreen> {
                             ),
                           ),
                         ),
-                        const SizedBox(height: 10),
+                        const SizedBox(height: 5),
                         // Password
                         TextField(
                           controller: passwordController,
@@ -137,7 +137,22 @@ class _CustomerLoginScreenState extends State<CustomerLoginScreen> {
                             ),
                           ),
                         ),
-                        const SizedBox(height: 20),
+                        // FORGOT PASSWORD BUTTON
+                        Align(
+                          alignment: Alignment.centerRight,
+                          child: TextButton(
+                            onPressed: () {
+                              // TODO: Handle Forgot Password navigation
+                            },
+                            child: const Text(
+                              "Forgot Password?",
+                              style: TextStyle(
+                                  color: Color(0xff3A7BFF),
+                                  fontWeight: FontWeight.bold),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 10),
                         // Login Button
                         SizedBox(
                           width: double.infinity,
@@ -173,7 +188,6 @@ class _CustomerLoginScreenState extends State<CustomerLoginScreen> {
                                   );
                                   return;
                                 }
-                                // TODO: Navigate to Customer Home Screen
                               },
                               style: ElevatedButton.styleFrom(
                                 backgroundColor: Colors.transparent,
