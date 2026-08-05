@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'customer_home_screen.dart';
 
 class CustomerLoginScreen extends StatefulWidget {
   const CustomerLoginScreen({super.key});
@@ -54,14 +55,12 @@ class _CustomerLoginScreenState extends State<CustomerLoginScreen> {
 
     showMessage("Login successful");
 
-    // Customer Home Screen create chesina tarvata ikkada navigation add cheyyali.
-    //
-    // Navigator.pushReplacement(
-    //   context,
-    //   MaterialPageRoute(
-    //     builder: (context) => const CustomerHomeScreen(),
-    //   ),
-    // );
+    Navigator.pushReplacement(
+      context,
+      MaterialPageRoute(
+        builder: (context) => const CustomerHomeScreen(),
+      ),
+    );
   }
 
   void openRegisterScreen() {
@@ -273,7 +272,7 @@ class _CustomerLoginScreenState extends State<CustomerLoginScreen> {
                               ),
                               boxShadow: [
                                 BoxShadow(
-                                  color: Colors.blueAccent.withOpacity(0.30),
+                                  color: Colors.blueAccent.withValues(alpha: 0.30),
                                   blurRadius: 10,
                                   offset: const Offset(0, 5),
                                 ),
@@ -929,7 +928,7 @@ class _CustomerRegisterScreenState extends State<CustomerRegisterScreen> {
                           //================ GENDER =================//
 
                           DropdownButtonFormField<String>(
-                            value: selectedGender,
+                            initialValue: selectedGender,
                             decoration: fieldDecoration(
                               label: "Gender",
                               hint: "Select gender",
@@ -1114,7 +1113,7 @@ class _CustomerRegisterScreenState extends State<CustomerRegisterScreen> {
                                 borderRadius: BorderRadius.circular(15),
                                 boxShadow: [
                                   BoxShadow(
-                                    color: Colors.blueAccent.withOpacity(0.25),
+                                    color: Colors.blueAccent.withValues(alpha: 0.25),
                                     blurRadius: 10,
                                     offset: const Offset(0, 5),
                                   ),

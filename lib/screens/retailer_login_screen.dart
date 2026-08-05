@@ -2,103 +2,367 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:sms_autofill/sms_autofill.dart';
 
-const productCategories = <String>[
-  'Grocery', 'Food Delivery', 'Restaurant', 'Bakery',
-  'Fruits & Vegetables', 'Dairy', 'Meat & Fish',
-  'Pharmacy / Medicines', 'Flowers', 'Gifts', 'Cakes', 'Courier',
-  'Parcel Delivery', 'Documents', 'E-commerce Products', 'Electronics',
-  'Mobile Accessories', 'Computer Accessories', 'Fashion & Clothing',
-  'Footwear', 'Beauty & Cosmetics', 'Books & Stationery', 'Pet Supplies',
-  'Home Essentials', 'Furniture (Local)', 'Hardware & Electrical Items',
-  'AC Spare Parts', 'Automobile Spare Parts', 'Toys', 'Sports Goods',
-  'Office Supplies',
-];
+import 'retailer_home_screen.dart';
+import 'retailer_register_screen.dart';
 
-const serviceCategories = <String>[
-  'Electrician', 'Plumber', 'Carpenter', 'Welder', 'Fitter',
-  'AC Technician', 'Mobile Repair', 'Computer Hardware Service',
-  'CCTV Technician', 'Tailor', 'Beautician', 'Hair Stylist', 'Spa & Salon',
-  'Housekeeping', 'Cleaning', 'Automobile Technician', 'Photography',
-  'Video Editing', 'Graphic Design', 'UI/UX Design', 'Digital Marketing',
-  'Social Media Service', 'Content Writing', 'Translation', 'Legal Service',
-  'Event Management', 'Gym & Fitness', 'Real Estate', 'Insurance Service',
-  'Travel & Tourism', 'Domestic Helper', 'Others',
-];
+enum OtpVerificationResult { verified, invalid }
 
-const jobCategories = <String>[
-  'IT / Software', 'Banking & Finance', 'Accounting', 'Sales', 'Marketing',
-  'Customer Support', 'BPO / Call Center', 'Human Resources (HR)',
-  'Administration', 'Data Entry', 'Teaching / Education', 'Healthcare',
-  'Nursing', 'Lab Technician', 'Engineering', 'Civil Engineering',
-  'Mechanical Engineering', 'Electrical Engineering',
-  'Electronics Engineering', 'Manufacturing', 'Factory Jobs', 'Production',
-  'Quality Control', 'Warehouse Jobs', 'Logistics Jobs', 'Driver',
-  'Cab Driver', 'Truck Driver', 'Bike Rider', 'Security Guard', 'Hotel Jobs',
-  'Chef', 'Cook', 'Waiter', 'Aviation', 'Airport Staff', 'Agriculture',
-  'Poultry', 'Fisheries', 'Telecom', 'Media', 'Journalism', 'NGO Jobs',
-  'Retail Jobs', 'Cashier', 'Showroom Sales', 'Freelancing',
-  'Work From Home', 'Part-Time', 'Internship', 'Fresher Jobs',
-  'Daily Wage Jobs', 'Contract Jobs', 'Full-Time Jobs',
-  'Research & Development', 'Startup Jobs', 'Office Assistant',
-  'Receptionist', 'Helper', 'Others',
-];
+typedef SendRetailerOtp = Future<bool> Function(String mobileNumber);
+typedef VerifyRetailerOtp = Future<OtpVerificationResult> Function(
+  String mobileNumber,
+  String otp,
+);
 
 class RetailerLoginScreen extends StatefulWidget {
-  const RetailerLoginScreen({super.key});
+  const RetailerLoginScreen({
+    super.key,
+    this.sendOtp,
+    this.verifyOtp,
+  });
+
+  /// Connect these callbacks to Firebase Phone Auth or your backend OTP API.
+  /// Keeping them nullable prevents any demo/fake OTP from logging in.
+  final SendRetailerOtp? sendOtp;
+  final VerifyRetailerOtp? verifyOtp;
 
   @override
   State<RetailerLoginScreen> createState() => _RetailerLoginScreenState();
 }
 
-class _RetailerLoginScreenState extends State<RetailerLoginScreen> {
-  final mobile = TextEditingController();
-  final password = TextEditingController();
-  bool hidePassword = true;
-  Map<String, String>? account;
+class _RetailerLoginScreenState extends State<RetailerLoginScreen>
+    with CodeAutoFill {
+  final _formKey = GlobalKey<FormState>();
+  final _mobileController = TextEditingController();
+  final _passwordController = TextEditingController();
+  final _otpController = TextEditingController();
 
-  void notice(String text) {
+  Map<String, String>? _registeredAccount;
+  Timer? _passwordTimer;
+  bool _useOtpLogin = false;
+  bool _hidePassword = true;
+  bool _isBusy = false;
+  bool _otpSent = false;
+  bool _isOtpVerified = false;
+  String? _otpStatusMessage;
+  bool _otpStatusIsError = false;
+  String? _lastVerificationOtp;
+
+  void _showMessage(
+    String message, {
+    bool isError = false,
+    bool isSuccess = false,
+  }) {
+    if (!mounted) return;
     ScaffoldMessenger.of(context)
       ..hideCurrentSnackBar()
-      ..showSnackBar(SnackBar(content: Text(text), behavior: SnackBarBehavior.floating));
+      ..showSnackBar(
+        SnackBar(
+          content: Text(message),
+          behavior: SnackBarBehavior.floating,
+          backgroundColor: isError
+              ? Colors.red.shade700
+              : isSuccess
+                  ? Colors.green.shade700
+                  : null,
+        ),
+      );
   }
 
-  Future<void> createNewAccount() async {
-    final data = await Navigator.push<Map<String, String>>(
-      context,
-      MaterialPageRoute(builder: (_) => const PartnerRegisterScreen()),
-    );
-    if (data == null || !mounted) return;
+  void _selectLoginType(bool useOtp) {
+    if (_useOtpLogin == useOtp) return;
+
+    // Change the selected login type immediately. Keeping focus/reset work out
+    // of the way makes the tab react on the first tap on every platform.
+    FocusManager.instance.primaryFocus?.unfocus();
+    _passwordTimer?.cancel();
     setState(() {
-      account = data;
-      mobile.text = data['mobile']!;
-      password.text = data['password']!;
+      _useOtpLogin = useOtp;
+      _otpSent = false;
+      _otpController.clear();
+      _isOtpVerified = false;
+      _otpStatusMessage = null;
+      _otpStatusIsError = false;
+      _lastVerificationOtp = null;
+      _hidePassword = true;
     });
-    notice('Account created successfully. Please login.');
   }
 
-  void login() {
+  void _togglePasswordVisibility() {
+    _passwordTimer?.cancel();
+
+    if (!_hidePassword) {
+      setState(() => _hidePassword = true);
+      return;
+    }
+
+    setState(() => _hidePassword = false);
+    _passwordTimer = Timer(const Duration(seconds: 5), () {
+      if (mounted) setState(() => _hidePassword = true);
+    });
+  }
+
+  Future<void> _createNewAccount() async {
     FocusScope.of(context).unfocus();
-    if (mobile.text.trim().length != 10) {
-      notice('Enter a valid 10-digit mobile number');
-      return;
-    }
-    if (password.text.length < 6) {
-      notice('Enter a valid password');
-      return;
-    }
+
+    final account = await Navigator.push<Map<String, String>>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const RetailerRegisterScreen(),
+      ),
+    );
+
+    if (!mounted || account == null) return;
+
+    setState(() {
+      _registeredAccount = Map<String, String>.from(account);
+      _mobileController.text = account['mobile'] ?? '';
+      _passwordController.text = account['password'] ?? '';
+      _otpController.clear();
+      _useOtpLogin = false;
+      _otpSent = false;
+      _isOtpVerified = false;
+      _otpStatusMessage = null;
+      _otpStatusIsError = false;
+      _lastVerificationOtp = null;
+      _hidePassword = true;
+    });
+
+    _showMessage('Account created successfully. You can now login.');
+  }
+
+  Map<String, String>? _findRegisteredAccount() {
+    final account = _registeredAccount;
     if (account == null) {
-      notice('First create a new partner account');
+      _showMessage('First create a new partner account', isError: true);
+      return null;
+    }
+
+    if (_mobileController.text.trim() != (account['mobile'] ?? '')) {
+      _showMessage('This mobile number is not registered', isError: true);
+      return null;
+    }
+
+    return account;
+  }
+
+  Future<void> _passwordLogin() async {
+    FocusScope.of(context).unfocus();
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+
+    final account = _findRegisteredAccount();
+    if (account == null) return;
+
+    if (_passwordController.text != (account['password'] ?? '')) {
+      _showMessage('Incorrect password', isError: true);
       return;
     }
-    if (mobile.text.trim() != account!['mobile'] ||
-        password.text != account!['password']) {
-      notice('Incorrect mobile number or password');
+
+    await _openDashboard(account);
+  }
+
+  Future<void> _sendOtp() async {
+    FocusScope.of(context).unfocus();
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    if (_findRegisteredAccount() == null || _isBusy) return;
+
+    final otpSender = widget.sendOtp;
+    if (otpSender == null) {
+      _showMessage(
+        'Real OTP backend is not connected yet. Please use Password Login.',
+        isError: true,
+      );
       return;
     }
+
+    setState(() {
+      _isBusy = true;
+      _otpController.clear();
+      _isOtpVerified = false;
+      _otpStatusMessage = 'Sending OTP...';
+      _otpStatusIsError = false;
+      _lastVerificationOtp = null;
+    });
+
+    try {
+      listenForCode();
+      final sent = await otpSender(_mobileController.text.trim())
+          .timeout(const Duration(seconds: 30));
+      if (!mounted) return;
+
+      setState(() {
+        _isBusy = false;
+        _otpSent = sent;
+        _otpStatusMessage = sent
+            ? 'Waiting for SMS OTP...'
+            : 'OTP could not be sent. Please try again.';
+        _otpStatusIsError = !sent;
+      });
+
+      if (!sent) {
+        _showMessage('OTP could not be sent. Please try again.', isError: true);
+      } else if (_otpController.text.length == 6) {
+        _verifyOtp();
+      }
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() {
+        _isBusy = false;
+        _otpSent = false;
+        _otpStatusMessage = 'Backend is taking too long. Please try again.';
+        _otpStatusIsError = true;
+      });
+      _showMessage('Backend timeout. Please try again.', isError: true);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isBusy = false;
+        _otpSent = false;
+        _otpStatusMessage = 'Unable to send OTP. Please try again.';
+        _otpStatusIsError = true;
+      });
+      _showMessage('Unable to send OTP. Please try again.', isError: true);
+    }
+  }
+
+  Future<void> _verifyOtp() async {
+    if (!_otpSent || _isBusy || _isOtpVerified) return;
+    final enteredOtp = _otpController.text.trim();
+    if (enteredOtp.length != 6 || _lastVerificationOtp == enteredOtp) return;
+    final account = _findRegisteredAccount();
+    if (account == null) return;
+
+    final otpVerifier = widget.verifyOtp;
+    if (otpVerifier == null) {
+      _showMessage('OTP verification backend is not connected.', isError: true);
+      return;
+    }
+
+    setState(() {
+      _isBusy = true;
+      _lastVerificationOtp = enteredOtp;
+      _otpStatusMessage = 'Verifying OTP...';
+      _otpStatusIsError = false;
+    });
+
+    try {
+      final result = await otpVerifier(
+        _mobileController.text.trim(),
+        enteredOtp,
+      ).timeout(const Duration(seconds: 30));
+      if (!mounted) return;
+
+      if (result == OtpVerificationResult.verified) {
+        setState(() {
+          _isBusy = false;
+          _isOtpVerified = true;
+          _otpStatusMessage = 'OTP Verified Successfully';
+          _otpStatusIsError = false;
+        });
+        _showMessage(
+          'OTP Verified Successfully',
+          isSuccess: true,
+        );
+        await Future<void>.delayed(const Duration(milliseconds: 650));
+        if (mounted) await _openDashboard(account);
+      } else {
+        setState(() {
+          _isBusy = false;
+          _isOtpVerified = false;
+          _otpStatusMessage = 'Invalid OTP';
+          _otpStatusIsError = true;
+          _otpController.clear();
+          _lastVerificationOtp = null;
+        });
+        _showMessage('Invalid OTP', isError: true);
+      }
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() {
+        _isBusy = false;
+        _lastVerificationOtp = null;
+        _otpStatusMessage = 'Backend is taking too long. Please try again.';
+        _otpStatusIsError = true;
+      });
+      _showMessage('Backend timeout. Please try again.', isError: true);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _isBusy = false;
+        _lastVerificationOtp = null;
+        _otpStatusMessage = 'OTP verification failed. Please try again.';
+        _otpStatusIsError = true;
+      });
+      _showMessage('OTP verification failed.', isError: true);
+    }
+  }
+
+  @override
+  void codeUpdated() {
+    final receivedCode = code?.replaceAll(RegExp(r'\D'), '') ?? '';
+    if (!mounted || receivedCode.length < 6) return;
+
+    final otp = receivedCode.substring(0, 6);
+    _handleOtpChanged(otp, receivedAutomatically: true);
+  }
+
+  void _handleOtpChanged(
+    String value, {
+    bool receivedAutomatically = false,
+  }) {
+    final digits = value.replaceAll(RegExp(r'\D'), '');
+    final normalized = digits.length > 6 ? digits.substring(0, 6) : digits;
+
+    if (_otpController.text != normalized) {
+      _otpController.value = TextEditingValue(
+        text: normalized,
+        selection: TextSelection.collapsed(offset: normalized.length),
+      );
+    }
+
+    if (!mounted) return;
+    setState(() {
+      _isOtpVerified = false;
+      _otpStatusIsError = false;
+      if (normalized.length < 6) {
+        _lastVerificationOtp = null;
+        _otpStatusMessage = receivedAutomatically
+            ? 'OTP received...'
+            : 'Enter the 6-digit OTP';
+      } else {
+        _otpStatusMessage = receivedAutomatically
+            ? 'OTP received. Verifying...'
+            : 'OTP entered. Verifying...';
+      }
+    });
+
+    if (_otpSent && normalized.length == 6) {
+      Future<void>.microtask(_verifyOtp);
+    }
+  }
+
+  Future<void> _openDashboard(Map<String, String> account) async {
+    if (_isBusy) return;
+    setState(() => _isBusy = true);
+
+    await Future<void>.delayed(const Duration(milliseconds: 450));
+    if (!mounted) return;
+
     Navigator.pushReplacement(
       context,
-      MaterialPageRoute(builder: (_) => PartnerDashboardScreen(account: account!)),
+      MaterialPageRoute(
+        builder: (_) => RetailerHomeScreen(
+          account: Map<String, String>.from(account),
+        ),
+      ),
+    );
+  }
+
+  void _forgotPassword() {
+    _selectLoginType(true);
+    _showMessage(
+      'Use SMS OTP after the real OTP service is connected.',
     );
   }
 
@@ -108,74 +372,93 @@ class _RetailerLoginScreenState extends State<RetailerLoginScreen> {
       backgroundColor: const Color(0xffF6F7FB),
       body: SafeArea(
         child: SingleChildScrollView(
+          keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
           child: Column(
             children: [
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.fromLTRB(24, 34, 24, 42),
-                decoration: const BoxDecoration(
-                  gradient: LinearGradient(colors: [Color(0xffFF8A00), Color(0xffFF5F00)]),
-                  borderRadius: BorderRadius.only(bottomLeft: Radius.circular(36), bottomRight: Radius.circular(36)),
-                ),
-                child: const Column(children: [
-                  CircleAvatar(radius: 45, backgroundColor: Colors.white, child: Icon(Icons.business_center, size: 49, color: Color(0xffFF6500))),
-                  SizedBox(height: 17),
-                  Text('Business Partner Login', style: TextStyle(color: Colors.white, fontSize: 27, fontWeight: FontWeight.bold)),
-                  SizedBox(height: 6),
-                  Text('Seller • Service Provider • Employer', style: TextStyle(color: Colors.white70)),
-                ]),
-              ),
+              _buildHeader(),
               Padding(
-                padding: const EdgeInsets.all(20),
+                padding: const EdgeInsets.fromLTRB(20, 20, 20, 30),
                 child: Card(
-                  elevation: 6,
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(22)),
+                  elevation: 4,
+                  color: Colors.white,
+                  shadowColor: Colors.black12,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(22),
+                  ),
                   child: Padding(
                     padding: const EdgeInsets.all(20),
-                    child: Column(children: [
-                      TextField(
-                        controller: mobile,
-                        keyboardType: TextInputType.phone,
-                        maxLength: 10,
-                        inputFormatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)],
-                        decoration: inputDecoration('Mobile Number', Icons.phone_android).copyWith(counterText: ''),
-                      ),
-                      const SizedBox(height: 17),
-                      TextField(
-                        controller: password,
-                        obscureText: hidePassword,
-                        onSubmitted: (_) => login(),
-                        decoration: inputDecoration('Password', Icons.lock_outline).copyWith(
-                          suffixIcon: IconButton(
-                            onPressed: () => setState(() => hidePassword = !hidePassword),
-                            icon: Icon(hidePassword ? Icons.visibility_off : Icons.visibility),
+                    child: Form(
+                      key: _formKey,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          const Text(
+                            'Login to your partner account',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(
+                              color: Color(0xff172554),
+                              fontSize: 17,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
-                        ),
+                          const SizedBox(height: 18),
+                          _buildLoginTypeSelector(),
+                          const SizedBox(height: 22),
+                          _buildMobileField(),
+                          const SizedBox(height: 17),
+                          AnimatedSwitcher(
+                            duration: const Duration(milliseconds: 220),
+                            child: _useOtpLogin
+                                ? _buildOtpSection()
+                                : _buildPasswordSection(),
+                          ),
+                          const SizedBox(height: 20),
+                          const Row(
+                            children: [
+                              Expanded(child: Divider()),
+                              Padding(
+                                padding: EdgeInsets.symmetric(horizontal: 12),
+                                child: Text(
+                                  'OR',
+                                  style: TextStyle(
+                                    color: Color(0xff8A8F9C),
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                              Expanded(child: Divider()),
+                            ],
+                          ),
+                          const SizedBox(height: 18),
+                          const Text(
+                            "Don't have a partner account?",
+                            textAlign: TextAlign.center,
+                            style: TextStyle(color: Color(0xff666B78)),
+                          ),
+                          const SizedBox(height: 10),
+                          SizedBox(
+                            height: 52,
+                            child: OutlinedButton.icon(
+                              onPressed: _isBusy ? null : _createNewAccount,
+                              icon: const Icon(Icons.person_add_alt_1),
+                              label: const Text(
+                                'CREATE NEW ACCOUNT',
+                                style: TextStyle(fontWeight: FontWeight.bold),
+                              ),
+                              style: OutlinedButton.styleFrom(
+                                foregroundColor: const Color(0xffFF6500),
+                                side: const BorderSide(
+                                  color: Color(0xffFF6500),
+                                ),
+                                shape: RoundedRectangleBorder(
+                                  borderRadius: BorderRadius.circular(14),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
                       ),
-                      Align(alignment: Alignment.centerRight, child: TextButton(onPressed: () => notice('Forgot Password will be connected with Firebase'), child: const Text('Forgot Password?'))),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 54,
-                        child: ElevatedButton(
-                          onPressed: login,
-                          style: orangeButton(),
-                          child: const Text('LOGIN', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-                        ),
-                      ),
-                      const SizedBox(height: 18),
-                      const Text("Don't have a partner account?"),
-                      const SizedBox(height: 10),
-                      SizedBox(
-                        width: double.infinity,
-                        height: 52,
-                        child: OutlinedButton.icon(
-                          onPressed: createNewAccount,
-                          icon: const Icon(Icons.person_add_alt_1),
-                          label: const Text('CREATE NEW ACCOUNT', style: TextStyle(fontWeight: FontWeight.bold)),
-                          style: OutlinedButton.styleFrom(foregroundColor: const Color(0xffFF6500), side: const BorderSide(color: Color(0xffFF6500)), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14))),
-                        ),
-                      ),
-                    ]),
+                    ),
                   ),
                 ),
               ),
@@ -186,302 +469,470 @@ class _RetailerLoginScreenState extends State<RetailerLoginScreen> {
     );
   }
 
-  @override
-  void dispose() {
-    mobile.dispose();
-    password.dispose();
-    super.dispose();
-  }
-}
-
-class PartnerRegisterScreen extends StatefulWidget {
-  const PartnerRegisterScreen({super.key});
-
-  @override
-  State<PartnerRegisterScreen> createState() => _PartnerRegisterScreenState();
-}
-
-class _PartnerRegisterScreenState extends State<PartnerRegisterScreen> {
-  final formKey = GlobalKey<FormState>();
-  final owner = TextEditingController();
-  final business = TextEditingController();
-  final mobile = TextEditingController();
-  final email = TextEditingController();
-  final address = TextEditingController();
-  final pincode = TextEditingController();
-  final gst = TextEditingController();
-  final license = TextEditingController();
-  final bankUpi = TextEditingController();
-  final password = TextEditingController();
-  final confirmPassword = TextEditingController();
-
-  String accountType = 'Product Seller';
-  String? category;
-  bool ownDelivery = true;
-  bool accepted = false;
-  bool hidePassword = true;
-  bool hideConfirm = true;
-
-  List<String> get currentCategories {
-    if (accountType == 'Product Seller') return productCategories;
-    if (accountType == 'Service Provider') return serviceCategories;
-    return jobCategories;
-  }
-
-  String get licenseHint {
-    if (category == 'Food Delivery' || category == 'Restaurant' || category == 'Bakery') return 'FSSAI License Number (if applicable)';
-    if (category == 'Pharmacy / Medicines') return 'Drug License Number';
-    return 'Business/Professional License (optional)';
-  }
-
-  void submit() {
-    FocusScope.of(context).unfocus();
-    if (!(formKey.currentState?.validate() ?? false)) return;
-    if (category == null) {
-      show('Please select a category');
-      return;
-    }
-    if (!accepted) {
-      show('Please accept Terms & Conditions');
-      return;
-    }
-    Navigator.pop(context, {
-      'owner': owner.text.trim(),
-      'business': business.text.trim(),
-      'mobile': mobile.text.trim(),
-      'email': email.text.trim(),
-      'address': address.text.trim(),
-      'pincode': pincode.text.trim(),
-      'gst': gst.text.trim(),
-      'license': license.text.trim(),
-      'bankUpi': bankUpi.text.trim(),
-      'password': password.text,
-      'accountType': accountType,
-      'category': category!,
-      'deliveryMode': accountType == 'Product Seller'
-          ? (ownDelivery ? 'Own Delivery' : 'Flash2Mart Delivery')
-          : 'Not Applicable',
-    });
-  }
-
-  void show(String text) => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: const Color(0xffF6F7FB),
-      appBar: AppBar(title: const Text('Partner Registration'), backgroundColor: const Color(0xffFF6500), foregroundColor: Colors.white),
-      body: Form(
-        key: formKey,
-        child: ListView(
-          padding: const EdgeInsets.all(18),
-          children: [
-            const Icon(Icons.add_business, size: 70, color: Color(0xffFF6500)),
-            const Text('Create Business Account', textAlign: TextAlign.center, style: TextStyle(fontSize: 25, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 7),
-            const Text('Choose the correct account type for your work', textAlign: TextAlign.center, style: TextStyle(color: Colors.black54)),
-            const SizedBox(height: 22),
-            DropdownButtonFormField<String>(
-              initialValue: accountType,
-              decoration: inputDecoration('Account Type', Icons.account_tree_outlined),
-              items: const [
-                DropdownMenuItem(value: 'Product Seller', child: Text('Product Seller / Shop')),
-                DropdownMenuItem(value: 'Service Provider', child: Text('Service Provider')),
-                DropdownMenuItem(value: 'Employer / Job Provider', child: Text('Employer / Job Provider')),
-              ],
-              onChanged: (value) => setState(() {
-                accountType = value!;
-                category = null;
-              }),
-            ),
-            gap(),
-            DropdownButtonFormField<String>(
-              key: ValueKey(accountType),
-              initialValue: category,
-              isExpanded: true,
-              decoration: inputDecoration('Business Category', Icons.category_outlined),
-              items: currentCategories.map((item) => DropdownMenuItem(value: item, child: Text(item, overflow: TextOverflow.ellipsis))).toList(),
-              onChanged: (value) => setState(() => category = value),
-              validator: (value) => value == null ? 'Select a category' : null,
-            ),
-            gap(),
-            field(owner, 'Owner / Contact Person Name', Icons.person_outline, validator: required),
-            gap(),
-            field(business, accountType == 'Employer / Job Provider' ? 'Company Name' : 'Business / Shop Name', Icons.business_outlined, validator: required),
-            gap(),
-            field(mobile, 'Mobile Number', Icons.phone_android, keyboard: TextInputType.phone, formatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(10)], validator: (v) => v == null || v.length != 10 ? 'Enter valid 10-digit mobile number' : null),
-            gap(),
-            field(email, 'Email Address', Icons.email_outlined, keyboard: TextInputType.emailAddress, validator: (v) => v == null || !v.contains('@') ? 'Enter valid email address' : null),
-            gap(),
-            field(address, 'Business Address', Icons.location_on_outlined, maxLines: 3, validator: required),
-            gap(),
-            field(pincode, 'Pincode', Icons.pin_drop_outlined, keyboard: TextInputType.number, formatters: [FilteringTextInputFormatter.digitsOnly, LengthLimitingTextInputFormatter(6)], validator: (v) => v == null || v.length != 6 ? 'Enter valid 6-digit pincode' : null),
-            gap(),
-            field(gst, 'GST Number (optional)', Icons.receipt_long_outlined),
-            gap(),
-            field(license, licenseHint, Icons.verified_user_outlined),
-            gap(),
-            field(bankUpi, 'Bank Account / UPI ID', Icons.account_balance_outlined, validator: required),
-            if (accountType == 'Product Seller') ...[
-              gap(),
-              SwitchListTile(
-                contentPadding: const EdgeInsets.symmetric(horizontal: 8),
-                title: Text(ownDelivery ? 'I have my own delivery staff' : 'Use Flash2Mart delivery partners'),
-                subtitle: const Text('You can change this later'),
-                value: ownDelivery,
-                onChanged: (value) => setState(() => ownDelivery = value),
-              ),
-            ],
-            gap(),
-            passwordField(password, 'Password', hidePassword, () => showForFiveSeconds(true)),
-            gap(),
-            passwordField(confirmPassword, 'Confirm Password', hideConfirm, () => showForFiveSeconds(false), confirm: true),
-            CheckboxListTile(
-              contentPadding: EdgeInsets.zero,
-              value: accepted,
-              activeColor: const Color(0xffFF6500),
-              onChanged: (value) => setState(() => accepted = value ?? false),
-              title: const Text('I confirm that the details are correct and accept Terms & Conditions'),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 55,
-              child: ElevatedButton.icon(
-                onPressed: submit,
-                icon: const Icon(Icons.how_to_reg),
-                label: const Text('CREATE ACCOUNT', style: TextStyle(fontSize: 17, fontWeight: FontWeight.bold)),
-                style: orangeButton(),
-              ),
-            ),
-          ],
+  Widget _buildHeader() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(24, 26, 24, 32),
+      decoration: const BoxDecoration(
+        gradient: LinearGradient(
+          colors: [Color(0xffFF8A00), Color(0xffFF5F00)],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.only(
+          bottomLeft: Radius.circular(34),
+          bottomRight: Radius.circular(34),
         ),
       ),
-    );
-  }
-
-  void showForFiveSeconds(bool first) {
-    setState(() {
-      if (first) hidePassword = false;
-      if (!first) hideConfirm = false;
-    });
-    Timer(const Duration(seconds: 5), () {
-      if (!mounted) return;
-      setState(() {
-        if (first) hidePassword = true;
-        if (!first) hideConfirm = true;
-      });
-    });
-  }
-
-  String? required(String? value) => value == null || value.trim().isEmpty ? 'This field is required' : null;
-  Widget gap() => const SizedBox(height: 15);
-
-  Widget field(TextEditingController controller, String label, IconData icon,
-      {TextInputType? keyboard, List<TextInputFormatter>? formatters, String? Function(String?)? validator, int maxLines = 1}) {
-    return TextFormField(
-      controller: controller,
-      keyboardType: keyboard,
-      inputFormatters: formatters,
-      validator: validator,
-      maxLines: maxLines,
-      decoration: inputDecoration(label, icon).copyWith(filled: true, fillColor: Colors.white),
-    );
-  }
-
-  Widget passwordField(TextEditingController controller, String label, bool hidden, VoidCallback reveal, {bool confirm = false}) {
-    return TextFormField(
-      controller: controller,
-      obscureText: hidden,
-      validator: (value) {
-        if (value == null || value.length < 6) return 'Minimum 6 characters required';
-        if (confirm && value != password.text) return 'Passwords do not match';
-        return null;
-      },
-      decoration: inputDecoration(label, Icons.lock_outline).copyWith(
-        filled: true,
-        fillColor: Colors.white,
-        suffixIcon: IconButton(onPressed: reveal, icon: Icon(hidden ? Icons.visibility_off : Icons.visibility)),
-      ),
-    );
-  }
-
-  @override
-  void dispose() {
-    for (final controller in [owner, business, mobile, email, address, pincode, gst, license, bankUpi, password, confirmPassword]) {
-      controller.dispose();
-    }
-    super.dispose();
-  }
-}
-
-class PartnerDashboardScreen extends StatelessWidget {
-  final Map<String, String> account;
-  const PartnerDashboardScreen({super.key, required this.account});
-
-  @override
-  Widget build(BuildContext context) {
-    final type = account['accountType']!;
-    final actions = type == 'Product Seller'
-        ? const [('Products', Icons.inventory_2_outlined), ('Orders', Icons.receipt_long_outlined), ('Add Product', Icons.add_box_outlined), ('Delivery', Icons.delivery_dining), ('Earnings', Icons.wallet_outlined), ('Shop Profile', Icons.store_outlined)]
-        : type == 'Service Provider'
-            ? const [('Services', Icons.home_repair_service_outlined), ('Bookings', Icons.calendar_month_outlined), ('Add Service', Icons.add_circle_outline), ('Service Area', Icons.location_on_outlined), ('Earnings', Icons.wallet_outlined), ('Profile', Icons.person_outline)]
-            : const [('Job Posts', Icons.work_outline), ('Applications', Icons.people_outline), ('Post New Job', Icons.post_add), ('Interviews', Icons.event_available_outlined), ('Company', Icons.business_outlined), ('Profile', Icons.person_outline)];
-
-    return Scaffold(
-      backgroundColor: const Color(0xffF6F7FB),
-      appBar: AppBar(title: Text(account['business']!), backgroundColor: const Color(0xffFF6500), foregroundColor: Colors.white),
-      body: ListView(
-        padding: const EdgeInsets.all(18),
+      child: const Column(
         children: [
-          Container(
-            padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(gradient: const LinearGradient(colors: [Color(0xffFF8A00), Color(0xffFF5F00)]), borderRadius: BorderRadius.circular(20)),
-            child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-              Text('Welcome, ${account['owner']}', style: const TextStyle(color: Colors.white, fontSize: 21, fontWeight: FontWeight.bold)),
-              const SizedBox(height: 6),
-              Text('$type • ${account['category']}', style: const TextStyle(color: Colors.white70)),
-              if (type == 'Product Seller') Text(account['deliveryMode']!, style: const TextStyle(color: Colors.white70)),
-            ]),
+          CircleAvatar(
+            radius: 36,
+            backgroundColor: Colors.white,
+            child: Icon(
+              Icons.storefront_rounded,
+              size: 40,
+              color: Color(0xffFF6500),
+            ),
           ),
-          const SizedBox(height: 20),
-          Text(type == 'Employer / Job Provider' ? 'Employer Dashboard' : 'Business Dashboard', style: const TextStyle(fontSize: 21, fontWeight: FontWeight.bold)),
-          const SizedBox(height: 13),
-          GridView.builder(
-            shrinkWrap: true,
-            physics: const NeverScrollableScrollPhysics(),
-            itemCount: actions.length,
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(crossAxisCount: 2, crossAxisSpacing: 12, mainAxisSpacing: 12, childAspectRatio: 1.16),
-            itemBuilder: (_, index) {
-              final action = actions[index];
-              return Card(
-                elevation: 3,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(18)),
-                child: InkWell(
-                  borderRadius: BorderRadius.circular(18),
-                  onTap: () => ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text('${action.$1} selected'))),
-                  child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-                    Icon(action.$2, size: 42, color: const Color(0xffFF6500)),
-                    const SizedBox(height: 10),
-                    Text(action.$1, textAlign: TextAlign.center, style: const TextStyle(fontWeight: FontWeight.bold)),
-                  ]),
-                ),
-              );
-            },
+          SizedBox(height: 14),
+          Text(
+            'Business Partner Login',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Colors.white,
+              fontSize: 24,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          SizedBox(height: 5),
+          Text(
+            'Seller  •  Service Provider  •  Job Provider',
+            textAlign: TextAlign.center,
+            style: TextStyle(color: Colors.white70, fontSize: 13),
           ),
         ],
       ),
     );
   }
-}
 
-InputDecoration inputDecoration(String label, IconData icon) => InputDecoration(
+  Widget _buildLoginTypeSelector() {
+    return Container(
+      height: 50,
+      padding: const EdgeInsets.all(4),
+      decoration: BoxDecoration(
+        color: const Color(0xffF1F2F6),
+        borderRadius: BorderRadius.circular(14),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: _buildLoginTypeButton(
+              label: 'Password Login',
+              icon: Icons.lock_outline_rounded,
+              selected: !_useOtpLogin,
+              onTap: () => _selectLoginType(false),
+            ),
+          ),
+          Expanded(
+            child: _buildLoginTypeButton(
+              label: 'OTP Login',
+              icon: Icons.sms_outlined,
+              selected: _useOtpLogin,
+              onTap: () => _selectLoginType(true),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildLoginTypeButton({
+    required String label,
+    required IconData icon,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    return Semantics(
+      button: true,
+      selected: selected,
+      label: label,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _isBusy ? null : onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOut,
+          decoration: BoxDecoration(
+            color: selected ? Colors.white : Colors.transparent,
+            borderRadius: BorderRadius.circular(11),
+            boxShadow: selected
+                ? const [
+                    BoxShadow(
+                      color: Color(0x14000000),
+                      blurRadius: 6,
+                      offset: Offset(0, 2),
+                    ),
+                  ]
+                : const [],
+          ),
+          child: Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              Icon(
+                icon,
+                size: 18,
+                color: selected
+                    ? const Color(0xffFF6500)
+                    : const Color(0xff7A7F8C),
+              ),
+              const SizedBox(width: 6),
+              Flexible(
+                child: Text(
+                  label,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    color: selected
+                        ? const Color(0xff172554)
+                        : const Color(0xff7A7F8C),
+                    fontWeight:
+                        selected ? FontWeight.w700 : FontWeight.w600,
+                    fontSize: 13,
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMobileField() {
+    return TextFormField(
+      controller: _mobileController,
+      enabled: !_isBusy && !_otpSent,
+      keyboardType: TextInputType.phone,
+      textInputAction:
+          _useOtpLogin ? TextInputAction.done : TextInputAction.next,
+      maxLength: 10,
+      autofillHints: const [AutofillHints.telephoneNumber],
+      inputFormatters: [
+        FilteringTextInputFormatter.digitsOnly,
+        LengthLimitingTextInputFormatter(10),
+      ],
+      onFieldSubmitted: (_) {
+        if (_useOtpLogin) _sendOtp();
+      },
+      validator: (value) {
+        final mobile = (value ?? '').trim();
+        if (mobile.isEmpty) return 'Enter mobile number';
+        if (mobile.length != 10) {
+          return 'Enter a valid 10-digit mobile number';
+        }
+        return null;
+      },
+      decoration: _inputDecoration(
+        'Mobile Number',
+        Icons.phone_android,
+      ).copyWith(counterText: ''),
+    );
+  }
+
+  Widget _buildPasswordSection() {
+    return Column(
+      key: const ValueKey('password-section'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        TextFormField(
+          controller: _passwordController,
+          obscureText: _hidePassword,
+          enabled: !_isBusy,
+          textInputAction: TextInputAction.done,
+          autofillHints: const [AutofillHints.password],
+          onFieldSubmitted: (_) => _passwordLogin(),
+          validator: (value) {
+            if (_useOtpLogin) return null;
+            if ((value ?? '').isEmpty) return 'Enter password';
+            if ((value ?? '').length < 6) {
+              return 'Password must contain at least 6 characters';
+            }
+            return null;
+          },
+          decoration: _inputDecoration(
+            'Password',
+            Icons.lock_outline,
+          ).copyWith(
+            suffixIcon: IconButton(
+              tooltip: _hidePassword
+                  ? 'Show password for 5 seconds'
+                  : 'Hide password',
+              onPressed: _isBusy ? null : _togglePasswordVisibility,
+              icon: Icon(
+                _hidePassword
+                    ? Icons.visibility_off_outlined
+                    : Icons.visibility_outlined,
+                color: const Color(0xffFF6500),
+              ),
+            ),
+          ),
+        ),
+        Align(
+          alignment: Alignment.centerRight,
+          child: TextButton(
+            onPressed: _isBusy ? null : _forgotPassword,
+            child: const Text('Forgot Password?'),
+          ),
+        ),
+        const SizedBox(height: 8),
+        _buildPrimaryButton(
+          label: 'LOGIN',
+          icon: Icons.login_rounded,
+          onPressed: _passwordLogin,
+        ),
+      ],
+    );
+  }
+
+  Widget _buildOtpSection() {
+    return Column(
+      key: const ValueKey('otp-section'),
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (_otpSent) ...[
+          const Text(
+            'OTP auto-fills from SMS. You can also enter it manually.',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              color: Color(0xff666B78),
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const SizedBox(height: 14),
+          _buildOtpBoxes(),
+          const SizedBox(height: 14),
+          _buildOtpStatus(),
+          const SizedBox(height: 6),
+          TextButton(
+            onPressed: _isBusy ? null : _sendOtp,
+            child: const Text('Resend OTP'),
+          ),
+        ] else
+          _buildPrimaryButton(
+            label: 'SEND OTP',
+            icon: Icons.send_to_mobile_rounded,
+            onPressed: _sendOtp,
+          ),
+      ],
+    );
+  }
+
+  Widget _buildOtpBoxes() {
+    final otp = _otpController.text;
+    final borderColor = _isOtpVerified
+        ? Colors.green.shade600
+        : _otpStatusIsError
+            ? Colors.red.shade600
+            : const Color(0xffD8DCE6);
+
+    return SizedBox(
+      height: 54,
+      child: Stack(
+        children: [
+          IgnorePointer(
+            child: Row(
+              children: List.generate(11, (itemIndex) {
+                if (itemIndex.isOdd) return const SizedBox(width: 6);
+                final index = itemIndex ~/ 2;
+                final digit = index < otp.length ? otp[index] : '';
+                return Expanded(
+                  child: AnimatedContainer(
+                    duration: const Duration(milliseconds: 180),
+                    height: 52,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: _isOtpVerified
+                          ? const Color(0xffECFDF3)
+                          : const Color(0xffF8F9FD),
+                      borderRadius: BorderRadius.circular(11),
+                      border: Border.all(color: borderColor, width: 1.5),
+                    ),
+                    child: Text(
+                      digit,
+                      style: TextStyle(
+                        color: _isOtpVerified
+                            ? Colors.green.shade800
+                            : const Color(0xff172554),
+                        fontSize: 22,
+                        fontWeight: FontWeight.w800,
+                      ),
+                    ),
+                  ),
+                );
+              }),
+            ),
+          ),
+          Positioned.fill(
+            child: Opacity(
+              opacity: 0.01,
+              child: TextField(
+                controller: _otpController,
+                enabled: !_isBusy && !_isOtpVerified,
+                autofocus: true,
+                keyboardType: TextInputType.number,
+                textInputAction: TextInputAction.done,
+                autofillHints: const [AutofillHints.oneTimeCode],
+                maxLength: 6,
+                inputFormatters: [
+                  FilteringTextInputFormatter.digitsOnly,
+                  LengthLimitingTextInputFormatter(6),
+                ],
+                enableInteractiveSelection: false,
+                cursorColor: Colors.transparent,
+                style: const TextStyle(color: Colors.transparent),
+                decoration: const InputDecoration(
+                  counterText: '',
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.zero,
+                ),
+                onChanged: _handleOtpChanged,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildOtpStatus() {
+    if (_isBusy) {
+      return const Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          SizedBox(
+            width: 19,
+            height: 19,
+            child: CircularProgressIndicator(
+              strokeWidth: 2.3,
+              color: Color(0xffFF6500),
+            ),
+          ),
+          SizedBox(width: 10),
+          Text(
+            'Verifying OTP...',
+            style: TextStyle(fontWeight: FontWeight.w700),
+          ),
+        ],
+      );
+    }
+
+    final message = _otpStatusMessage;
+    if (message == null) return const SizedBox.shrink();
+
+    final success = _isOtpVerified;
+    final color = success
+        ? Colors.green.shade700
+        : _otpStatusIsError
+            ? Colors.red.shade700
+            : const Color(0xff666B78);
+
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      children: [
+        if (success || _otpStatusIsError)
+          Icon(
+            success ? Icons.check_circle_rounded : Icons.error_rounded,
+            color: color,
+            size: 20,
+          ),
+        if (success || _otpStatusIsError) const SizedBox(width: 7),
+        Flexible(
+          child: Text(
+            message,
+            textAlign: TextAlign.center,
+            style: TextStyle(color: color, fontWeight: FontWeight.w700),
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildPrimaryButton({
+    required String label,
+    required IconData icon,
+    required Future<void> Function() onPressed,
+  }) {
+    return SizedBox(
+      height: 54,
+      child: ElevatedButton.icon(
+        onPressed: _isBusy ? null : onPressed,
+        style: ElevatedButton.styleFrom(
+          foregroundColor: Colors.white,
+          backgroundColor: const Color(0xffFF6500),
+          disabledBackgroundColor: const Color(0xffFFB37E),
+          elevation: 0,
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(14),
+          ),
+        ),
+        icon: _isBusy
+            ? const SizedBox(
+                width: 22,
+                height: 22,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2.4,
+                  color: Colors.white,
+                ),
+              )
+            : Icon(icon),
+        label: Text(
+          _isBusy ? 'PLEASE WAIT...' : label,
+          style: const TextStyle(
+            fontSize: 15,
+            fontWeight: FontWeight.bold,
+          ),
+        ),
+      ),
+    );
+  }
+
+  InputDecoration _inputDecoration(String label, IconData icon) {
+    return InputDecoration(
       labelText: label,
-      prefixIcon: Icon(icon),
-      border: OutlineInputBorder(borderRadius: BorderRadius.circular(14)),
+      prefixIcon: Icon(icon, color: const Color(0xffFF6500)),
+      filled: true,
+      fillColor: const Color(0xffF8F9FD),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 16, vertical: 17),
+      border: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+      ),
+      enabledBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: const BorderSide(color: Color(0xffE2E5EC)),
+      ),
+      focusedBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: const BorderSide(color: Color(0xffFF6500), width: 2),
+      ),
+      errorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: const BorderSide(color: Colors.red),
+      ),
+      focusedErrorBorder: OutlineInputBorder(
+        borderRadius: BorderRadius.circular(14),
+        borderSide: const BorderSide(color: Colors.red, width: 2),
+      ),
     );
+  }
 
-ButtonStyle orangeButton() => ElevatedButton.styleFrom(
-      backgroundColor: const Color(0xffFF6500),
-      foregroundColor: Colors.white,
-      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
-    );
+  @override
+  void dispose() {
+    cancel();
+    unregisterListener();
+    _passwordTimer?.cancel();
+    _mobileController.dispose();
+    _passwordController.dispose();
+    _otpController.dispose();
+    super.dispose();
+  }
+}
